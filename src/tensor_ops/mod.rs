@@ -266,6 +266,9 @@ pub(crate) use to_dtype::ToDtypeKernel;
 pub(crate) use upscale2d::Upscale2DKernel;
 
 #[cfg(feature = "nightly")]
+pub mod conv1d;
+
+#[cfg(feature = "nightly")]
 mod conv2d;
 #[cfg(feature = "nightly")]
 pub use conv2d::TryConv2D;

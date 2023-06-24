@@ -241,6 +241,8 @@ pub mod modules {
     pub use super::batchnorm1d::BatchNorm1D;
     pub use super::batchnorm2d::BatchNorm2D;
     pub use super::bias2d::Bias2D;
+    #[cfg(feature="nightly")]
+    pub use super::conv::Conv1D;
     #[cfg(feature = "nightly")]
     pub use super::conv::Conv2D;
     #[cfg(feature = "nightly")]
@@ -277,6 +279,8 @@ pub mod builders {
     pub use super::batchnorm1d::builder::BatchNorm1D;
     pub use super::batchnorm2d::builder::BatchNorm2D;
     pub use super::bias2d::builder::Bias2D;
+    #[cfg(feature = "nightly")]
+    pub use super::conv::builder::Conv1D;
     #[cfg(feature = "nightly")]
     pub use super::conv::builder::Conv2D;
     #[cfg(feature = "nightly")]

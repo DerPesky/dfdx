@@ -1,13 +1,24 @@
 use num_traits::Float;
 use rand_distr::uniform::SampleUniform;
 
-use crate::{shapes::*, tensor::*, tensor_ops::*};
+use crate::{prelude::conv1d::TryConv1D, shapes::*, tensor::*, tensor_ops::*};
 
 use super::*;
 
 pub mod builder {
     #[derive(Debug)]
     pub struct Conv2D<
+        const IN_CHAN: usize,
+        const OUT_CHAN: usize,
+        const KERNEL_SIZE: usize,
+        const STRIDE: usize = 1,
+        const PADDING: usize = 0,
+        const DILATION: usize = 1,
+        const GROUPS: usize = 1,
+    >;
+
+    #[derive(Debug)]
+    pub struct Conv1D<
         const IN_CHAN: usize,
         const OUT_CHAN: usize,
         const KERNEL_SIZE: usize,
@@ -36,6 +47,29 @@ where
     Conv2D<I, O, K, S, P, L, G, E, D>: BuildModule<D, E>,
 {
     type Built = Conv2D<I, O, K, S, P, L, G, E, D>;
+    fn try_build_on_device(device: &D) -> Result<Self::Built, <D>::Err> {
+        Self::Built::try_build(device)
+    }
+}
+
+impl<
+        const I: usize,
+        const O: usize,
+        const K: usize,
+        const S: usize,
+        const P: usize,
+        const L: usize,
+        const G: usize,
+        E,
+        D,
+    > BuildOnDevice<D, E> for builder::Conv1D<I, O, K, S, P, L, G>
+where
+    E: Dtype,
+    D: Device<E>,
+    Const<{ I / G }>: Sized,
+    Conv1D<I, O, K, S, P, L, G, E, D>: BuildModule<D, E>,
+{
+    type Built = Conv1D<I, O, K, S, P, L, G, E, D>;
     fn try_build_on_device(device: &D) -> Result<Self::Built, <D>::Err> {
         Self::Built::try_build(device)
     }
@@ -170,6 +204,133 @@ where
 {
 }
 
+/// **Requires Nightly** Performs *unbiased* 1d convolutions on 2d and 3d images.
+///
+/// **Pytorch Equivalent**: `torch.nn.Conv1d(..., bias=False)`
+///
+/// To create a biased conv, combine with [crate::nn::modules::Bias1D]:
+/// ```ignore
+/// # use dfdx::prelude::*;
+/// type BiasedConv = (Conv1D<3, 5, 4>, Bias1D<5>);
+/// ```
+///
+/// Generics:
+/// - `IN_CHAN`: The number of input channels in an image.
+/// - `OUT_CHAN`: The number of channels in the output of the layer.
+/// - `KERNEL_SIZE`: The size of the kernel applied to the width of the images.
+/// - `STRIDE`: How far to move the kernel each step. Defaults to `1`.
+/// - `PADDING`: How much zero padding to add around the images. Defaults to `0`.
+/// - `DILATION`: Controls the spacing between kernel points. Defaults to `1`.
+/// - `GROUPS`: Controls the connections between inputs and outputs.
+///     `IN_CHAN` and `OUT_CHAN` must both be divisible by `GROUPS`. For example,
+///
+/// See [conv animations](https://github.com/vdumoulin/conv_arithmetic/blob/master/README.md) for helpful
+/// visualization of all of these parameters.
+
+#[derive(Debug, Clone)]
+pub struct Conv1D<
+    const IN_CHAN: usize,
+    const OUT_CHAN: usize,
+    const KERNEL_SIZE: usize,
+    const STRIDE: usize,
+    const PADDING: usize,
+    const DILATION: usize,
+    const GROUPS: usize,
+    E: Dtype,
+    D: Storage<E>,
+> where
+    Const<{ IN_CHAN / GROUPS }>: Sized,
+{
+    pub weight: Tensor<Rank3<OUT_CHAN, { IN_CHAN / GROUPS }, KERNEL_SIZE>, E, D>,
+}
+
+impl<
+        const I: usize,
+        const O: usize,
+        const K: usize,
+        const S: usize,
+        const P: usize,
+        const L: usize,
+        const G: usize,
+        E,
+        D,
+    > TensorCollection<E, D> for Conv1D<I, O, K, S, P, L, G, E, D>
+where
+    Const<{ I / G }>: Sized,
+    E: Dtype + Float + SampleUniform,
+    D: Device<E>,
+{
+    type To<E2: Dtype, D2: Device<E2>> = Conv1D<I, O, K, S, P, L, G, E2, D2>;
+
+    fn iter_tensors<V: ModuleVisitor<Self, E, D>>(
+        visitor: &mut V,
+    ) -> Result<Option<Self::To<V::E2, V::D2>>, V::Err> {
+        visitor.visit_fields(
+            Self::tensor(
+                "weight",
+                |s| &s.weight,
+                |s| &mut s.weight,
+                TensorOptions::reset_with(|t| {
+                    let b = E::ONE / E::from_usize(I * K).unwrap().sqrt();
+                    t.try_fill_with_distr(rand_distr::Uniform::new(-b, b))
+                }),
+            ),
+            |weight| Conv1D { weight },
+        )
+    }
+}
+
+impl<
+        const I: usize,
+        const O: usize,
+        const K: usize,
+        const S: usize,
+        const P: usize,
+        const L: usize,
+        const G: usize,
+        E,
+        D,
+        Img,
+    > Module<Img> for Conv1D<I, O, K, S, P, L, G, E, D>
+where
+    Const<{ I / G }>: Sized,
+    E: Dtype,
+    D: Device<E>,
+    (Img, Tensor<Rank3<O, { I / G }, K>, E, D>): TryConv1D<Const<S>, Const<P>, Const<L>, Const<G>>,
+{
+    type Output = <(Img, Tensor<Rank3<O, { I / G }, K>, E, D>) as TryConv1D<
+        Const<S>,
+        Const<P>,
+        Const<L>,
+        Const<G>,
+    >>::Convolved;
+    type Error = <(Img, Tensor<Rank3<O, { I / G }, K>, E, D>) as TryConv1D<
+        Const<S>,
+        Const<P>,
+        Const<L>,
+        Const<G>,
+    >>::Error;
+
+    fn try_forward(&self, x: Img) -> Result<Self::Output, Self::Error> {
+        (x, self.weight.clone()).try_conv1d(Const, Const, Const, Const)
+    }
+}
+
+impl<
+        const I: usize,
+        const O: usize,
+        const K: usize,
+        const S: usize,
+        const P: usize,
+        const L: usize,
+        const G: usize,
+        E: Dtype,
+        D: Storage<E>,
+    > NonMutableModule for Conv1D<I, O, K, S, P, L, G, E, D>
+where
+    Const<{ I / G }>: Sized,
+{
+}
 #[cfg(test)]
 mod tests {
     use crate::{
